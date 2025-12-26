@@ -2,12 +2,15 @@ receivers:
   otlp:
     protocols:
       grpc:
+        endpoint: 0.0.0.0:4317
 
 exporters:
-  jaeger:
-    endpoint: jaeger:14250
+  otlp:
+    endpoint: jaeger:4317
     tls:
-      insecure: true
+      insecure: true # Jaeger’s gRPC endpoint does not use TLS by default
+  prometheus:
+    endpoint: 0.0.0.0:8889
 
 processors:
   batch:
@@ -17,5 +20,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [jaeger]
-
+      exporters: [otlp]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

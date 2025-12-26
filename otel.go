@@ -79,7 +79,7 @@ func newPropagator() propagation.TextMapPropagator {
 func newTracerProvider(ctx context.Context, config Config) (*trace.TracerProvider, error) {
 	exporter, err := otlptracegrpc.New(
 		ctx,
-		otlptracegrpc.WithEndpointURL(config.TracingEndpoint),
+		otlptracegrpc.WithEndpoint(config.TracingEndpoint),
 		otlptracegrpc.WithInsecure(),
 	)
 	if err != nil {
@@ -110,7 +110,7 @@ func newTracerProvider(ctx context.Context, config Config) (*trace.TracerProvide
 func newMeterProvider(ctx context.Context, config Config) (*metric.MeterProvider, error) {
 	exporter, err := otlpmetricgrpc.New(
 		ctx,
-		otlpmetricgrpc.WithEndpointURL(config.MetricsEndpoint),
+		otlpmetricgrpc.WithEndpoint(config.MetricsEndpoint),
 		otlpmetricgrpc.WithInsecure(),
 	)
 	if err != nil {
