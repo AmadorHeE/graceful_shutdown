@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,57 +16,23 @@ const (
 	_readinessDrainDelay = 5 * time.Second
 )
 
-var isShuttingDown atomic.Bool
-
-func readinessHandler(w http.ResponseWriter, _ *http.Request) {
-	if isShuttingDown.Load() {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("shutting down"))
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
-}
-
-func helloWorldHandler(w http.ResponseWriter, r *http.Request) {
-	select {
-	case <-time.After(2 * time.Second):
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello, World!"))
-	case <-r.Context().Done():
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("request canceled"))
-	}
-}
-
 func main() {
-	// By default Zap initializes its global logger to a no-op logger, so we need to create one explicitly
-	logger, err := zap.NewProduction()
+	app, err := NewAPIServer()
 	if err != nil {
 		panic(err)
 	}
-	defer logger.Sync()
+
+	logger := app.Logger
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM) // It returns a context that is canceled when one of the specified signals is received
 	defer stop()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", readinessHandler) // Setup readiness endpoint
-	mux.HandleFunc("/", helloWorldHandler)
-
-	// By creating a separate context for ongoing requests, we can control their lifecycle during shutdown
+	// By creating a separate context for the api server, we can control their lifecycle during shutdown
 	ongoingCtx, stopOngoingGracefully := context.WithCancel(context.Background())
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
-		BaseContext: func(_ net.Listener) context.Context {
-			return ongoingCtx
-		},
-	}
 
 	go func() {
-		logger.Info("Server starting on :8080")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Info("Starting API server", zap.Int("port", app.Config.Port))
+		if err := app.Run(ongoingCtx); err != nil && err != http.ErrServerClosed {
 			panic(err)
 		}
 	}()
@@ -76,7 +40,7 @@ func main() {
 	<-rootCtx.Done() // Block until a signal is received
 	stop()           // Stop receiving any more signals
 
-	isShuttingDown.Store(true) // Mark the server as shutting down
+	app.InitiateShutdown() // Mark the server as shutting down
 	logger.Info("Receiving shutdown signal, shutting down.")
 
 	time.Sleep(_readinessDrainDelay) // Give time for readiness check to propagate
@@ -85,12 +49,19 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), _shutdownPeriod)
 	defer cancel()
 
-	err = server.Shutdown(shutdownCtx)
-	stopOngoingGracefully() // Cancel ongoing requests context
+	err = app.Shutdown(shutdownCtx)
 	if err != nil {
 		logger.Error("Failed to wait for ongoing requests to finish, waiting for forced cancellation")
-		time.Sleep(_shutdownHardPeriod)
 	}
+	stopOngoingGracefully() // Cancel ongoing requests context
+
+	// Shutdown application resources
+	err = app.ShutdownResources(shutdownCtx)
+	if err != nil {
+		logger.Error("Failed to shut down api server resources", zap.Error(err))
+	}
+
+	time.Sleep(_shutdownHardPeriod)
 
 	logger.Info("Server shut down gracefully.")
 }
