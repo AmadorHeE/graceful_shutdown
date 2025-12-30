@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"sync/atomic"
-	"time"
 
 	"github.com/kelseyhightower/envconfig"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -53,6 +52,8 @@ type APIServer struct {
 
 	server *http.Server
 
+	OTelProvider *OTelProvider
+
 	shutdownFuncs []func(context.Context) error
 }
 
@@ -84,19 +85,27 @@ func NewAPIServer() (*APIServer, error) {
 	shutdownFuncs = append(shutdownFuncs, otelProvider.Shutdown)
 
 	return &APIServer{
-		Config: config,
-		Logger: logger,
+		Config:       config,
+		Logger:       logger,
+		OTelProvider: otelProvider,
 	}, nil
 }
 
 func (a *APIServer) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", makeHTTPHandlerFunc(a.handleReadiness)) // Setup readiness endpoint
-	mux.HandleFunc("/", makeHTTPHandlerFunc(a.handleHelloWorld))       // Setup hello world endpoint
+	mux.HandleFunc("/healthz", makeHTTPHandlerFunc(handleReadiness(a))) // Setup readiness endpoint
+	mux.HandleFunc("/", makeHTTPHandlerFunc(handleHelloWorld))          // Setup hello world endpoint
+
+	// setup http metrics
+	httpMetrics, err := NewHTTPMetrics(a.OTelProvider.Meter)
+	if err != nil {
+		return err
+	}
+	httpMetricsMiddleware := HTTPMetricsMiddleware(httpMetrics)
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", a.Config.Port),
-		Handler: otelhttp.NewHandler(mux, "http.server"),
+		Handler: httpMetricsMiddleware(otelhttp.NewHandler(mux, "http.server")),
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
@@ -124,52 +133,4 @@ func (a *APIServer) ShutdownResources(ctx context.Context) error {
 		err = errors.Join(err, fn(ctx))
 	}
 	return err
-}
-
-func (a *APIServer) handleReadiness(w http.ResponseWriter, r *http.Request) error {
-	if r.Method == http.MethodGet {
-		return a.handleGetReadiness(w, r)
-	}
-
-	return fmt.Errorf("method not allowed: %s", r.Method)
-}
-
-func (a *APIServer) handleGetReadiness(w http.ResponseWriter, _ *http.Request) error {
-	if !a.isShuttingDown.Load() {
-		WriteJSON(
-			w,
-			http.StatusOK,
-			GetReadinessResponse{
-				Message: "ok",
-			},
-		)
-		return nil
-	}
-
-	return APIError{
-		Code:    503,
-		Message: "the server is shutting down",
-	}
-}
-
-func (a *APIServer) handleHelloWorld(w http.ResponseWriter, r *http.Request) error {
-	if r.Method == http.MethodGet {
-		return a.handleGetHelloWorld(w, r)
-	}
-
-	return fmt.Errorf("method not allowed: %s", r.Method)
-}
-
-func (a *APIServer) handleGetHelloWorld(w http.ResponseWriter, r *http.Request) error {
-	select {
-	case <-time.After(2 * time.Second):
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello, World!"))
-		return nil
-	case <-r.Context().Done():
-		return APIError{
-			Code:    http.StatusServiceUnavailable,
-			Message: "request canceled",
-		}
-	}
 }

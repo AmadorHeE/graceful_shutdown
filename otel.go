@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -17,6 +18,7 @@ import (
 )
 
 type OTelProvider struct {
+	Meter          otelmetric.Meter
 	propagator     propagation.TextMapPropagator
 	tracerProvider *trace.TracerProvider
 	meterProvider  *metric.MeterProvider
@@ -26,6 +28,8 @@ type OTelProvider struct {
 
 func NewOTelProvider(ctx context.Context, config Config) (*OTelProvider, error) {
 	shutdownFuncs := []func(context.Context) error{}
+
+	meter := otel.Meter("graceful_shutdown")
 
 	propagator := newPropagator()
 
@@ -43,6 +47,7 @@ func NewOTelProvider(ctx context.Context, config Config) (*OTelProvider, error) 
 	shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
 
 	return &OTelProvider{
+		Meter:          meter,
 		propagator:     propagator,
 		tracerProvider: tracerProvider,
 		meterProvider:  meterProvider,
